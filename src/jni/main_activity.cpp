@@ -469,7 +469,8 @@ int mapAndroidMeta(int meta) {
 }
 
 FakeJni::JInt MainActivity::getKeyFromKeyCode(FakeJni::JInt keyCode, FakeJni::JInt metaState, FakeJni::JInt deviceId) {
-    if(!Settings::enable_keyboard_autofocus_patches_1_20_60) {
+    // NetEase requires the normal Android printable-key query to focus chat.
+    if(!Settings::enable_keyboard_autofocus_patches_1_20_60 && !options.neteaseDev) {
         return 0;
     }
 

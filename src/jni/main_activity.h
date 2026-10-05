@@ -280,6 +280,12 @@ public:
         if(textInput)
             textInput->disable();
     }
+    // NetEase retains MainActivity text input and adds an Android IME action.
+    void showKeyboardNetease(std::shared_ptr<FakeJni::JString> text, FakeJni::JInt maxLen,
+                            FakeJni::JBoolean limit, FakeJni::JBoolean numbers,
+                            FakeJni::JBoolean multiline, FakeJni::JInt imeAction) {
+        showKeyboard(text, maxLen, limit, numbers, multiline);
+    }
     FakeJni::JBoolean hasHardwareKeyboard() {
         return true;
     }

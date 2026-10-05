@@ -136,7 +136,7 @@ void JniSupport::registerJniClasses() {
 }
 
 void JniSupport::registerMinecraftNatives(void* (*symResolver)(const char*)) {
-    registerNatives(MainActivity::getDescriptor(), {{"nativeRegisterThis", "()V"}, {"nativeWaitCrashManagementSetupComplete", "()V"}, {"nativeInitializeWithApplicationContext", "(Landroid/content/Context;)V"}, {"nativeShutdown", "()V"}, {"nativeUnregisterThis", "()V"}, {"nativeStopThis", "()V"}, {"nativeOnDestroy", "()V"}, {"nativeResize", "(II)V"}, {"nativeSetTextboxText", "(Ljava/lang/String;II)V"}, {"nativeCaretPosition", "(I)V"}, {"nativeBackPressed", "()V"}, {"nativeReturnKeyPressed", "()V"}, {"nativeOnPickImageSuccess", "(JLjava/lang/String;)V"}, {"nativeOnPickImageCanceled", "(J)V"}, {"nativeOnPickFileSuccess", "(Ljava/lang/String;)V"}, {"nativeOnPickFileCanceled", "()V"}, {"nativeInitializeXboxLive", "(JJ)V"}, {"nativeinitializeLibHttpClient", "(J)J"}, {"nativeInitializeLibHttpClient", "(J)J"}, {"nativeProcessIntentUriQuery", "(Ljava/lang/String;Ljava/lang/String;)V"}, {"nativeSetIntegrityToken", "(Ljava/lang/String;)V"}, {"nativeRunNativeCallbackOnUiThread", "(J)V"}}, symResolver);
+    registerNatives(MainActivity::getDescriptor(), {{"nativeRegisterThis", "()V"}, {"nativeWaitCrashManagementSetupComplete", "()V"}, {"nativeInitializeWithApplicationContext", "(Landroid/content/Context;)V"}, {"nativeShutdown", "()V"}, {"nativeUnregisterThis", "()V"}, {"nativeStopThis", "()V"}, {"nativeOnDestroy", "()V"}, {"nativeResize", "(II)V"}, {"nativeSetTextboxText", options.neteaseDev ? "(Ljava/lang/String;)V" : "(Ljava/lang/String;II)V"}, {"nativeCaretPosition", "(I)V"}, {"nativeBackPressed", "()V"}, {"nativeReturnKeyPressed", "()V"}, {"nativeOnPickImageSuccess", "(JLjava/lang/String;)V"}, {"nativeOnPickImageCanceled", "(J)V"}, {"nativeOnPickFileSuccess", "(Ljava/lang/String;)V"}, {"nativeOnPickFileCanceled", "()V"}, {"nativeInitializeXboxLive", "(JJ)V"}, {"nativeinitializeLibHttpClient", "(J)J"}, {"nativeInitializeLibHttpClient", "(J)J"}, {"nativeProcessIntentUriQuery", "(Ljava/lang/String;Ljava/lang/String;)V"}, {"nativeSetIntegrityToken", "(Ljava/lang/String;)V"}, {"nativeRunNativeCallbackOnUiThread", "(J)V"}}, symResolver);
     registerNatives(NetworkMonitor::getDescriptor(), {{"nativeUpdateNetworkStatus", "(ZZZ)V"}}, symResolver);
     registerNatives(NativeStoreListener::getDescriptor(), {
                                                               {"onStoreInitialized", "(JZ)V"},
@@ -336,7 +336,9 @@ void JniSupport::startGame(ANativeActivity_createFunc* activityOnCreate, void* g
         activity->connection = con;
         auto gc = vm.findClass("com/google/androidgamesdk/GameActivity");
         auto onTextInputEventNative = gc->getMethod("(JLcom/google/androidgamesdk/gametextinput/State;)V", "onTextInputEventNative");
-        useGameActivityTextInput = onTextInputEventNative;
+        // NetEase uses GameActivity for lifecycle/keys but retains the older
+        // MainActivity EditText callbacks. Its InputConnection has no text state.
+        useGameActivityTextInput = onTextInputEventNative && !options.neteaseDev;
         while(true) {
             int outFd;
             int outEvents;
@@ -344,7 +346,7 @@ void JniSupport::startGame(ANativeActivity_createFunc* activityOnCreate, void* g
             // run all pending callbacks
             while(FakeLooper::currentLooper->pollAll(0, &outFd, &outEvents, &outData) == ALOOPER_POLL_CALLBACK);
             auto state = con->state;
-            if (state && (*state->text != textInput.getText() || state->selectionEnd != textInput.getCursorPosition() || state->selectionStart != textInput.getCopyPosition())) {
+            if (useGameActivityTextInput && state && (*state->text != textInput.getText() || state->selectionEnd != textInput.getCursorPosition() || state->selectionStart != textInput.getCopyPosition())) {
                 *state->text = textInput.getText();
                 state->selectionEnd = textInput.getCursorPosition();
                 state->selectionStart = textInput.getCopyPosition();
@@ -506,12 +508,15 @@ void JniSupport::onWindowResized(int newWidth, int newHeight) {
 }
 
 void JniSupport::onSetTextboxText(std::string const& text) {
-    if(!useGameActivityTextInput && (!Settings::enable_keyboard_autofocus_patches_1_20_60 || getTextInputHandler().isEnabled())) {
+    // Pair native autofocus with the existing guard: an unfocused character
+    // is not a complete text value and must not replace the command prefix.
+    if(!useGameActivityTextInput && (!(Settings::enable_keyboard_autofocus_patches_1_20_60 || options.neteaseDev) || getTextInputHandler().isEnabled())) {
         FakeJni::LocalFrame frame(vm);
-        auto setText = activity->getClass().getMethod("(Ljava/lang/String;II)V", "nativeSetTextboxText");
+        auto setText = activity->getClass().getMethod(options.neteaseDev ? "(Ljava/lang/String;)V" : "(Ljava/lang/String;II)V", "nativeSetTextboxText");
         if(setText) {
             auto str = std::make_shared<FakeJni::JString>(text);
-            setText->invoke(frame.getJniEnv(), activity.get(), frame.getJniEnv().createLocalReference(str), getTextInputHandler().getCopyPosition(), getTextInputHandler().getCursorPosition());
+            if(options.neteaseDev) setText->invoke(frame.getJniEnv(), activity.get(), frame.getJniEnv().createLocalReference(str));
+            else setText->invoke(frame.getJniEnv(), activity.get(), frame.getJniEnv().createLocalReference(str), getTextInputHandler().getCopyPosition(), getTextInputHandler().getCursorPosition());
         }
     }
     auto pos = getTextInputHandler().getCursorPosition();
@@ -532,10 +537,11 @@ void JniSupport::onCaretPosition(int pos) {
     if(method) {
         method->invoke(frame.getJniEnv(), activity.get(), pos);
     } else {
-        auto setText = activity->getClass().getMethod("(Ljava/lang/String;II)V", "nativeSetTextboxText");
+        auto setText = activity->getClass().getMethod(options.neteaseDev ? "(Ljava/lang/String;)V" : "(Ljava/lang/String;II)V", "nativeSetTextboxText");
         if(setText) {
             auto str = std::make_shared<FakeJni::JString>(getTextInputHandler().getText());
-            setText->invoke(frame.getJniEnv(), activity.get(), frame.getJniEnv().createLocalReference(str), getTextInputHandler().getCopyPosition(), pos);
+            if(options.neteaseDev) setText->invoke(frame.getJniEnv(), activity.get(), frame.getJniEnv().createLocalReference(str));
+            else setText->invoke(frame.getJniEnv(), activity.get(), frame.getJniEnv().createLocalReference(str), getTextInputHandler().getCopyPosition(), pos);
         }
     }
 }
