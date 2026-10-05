@@ -152,6 +152,7 @@ int main(int argc, char* argv[]) {
     argparser::arg<bool> neteaseDev(p, "--netease-dev", "", "Experimental offline developer APK startup");
     argparser::arg<std::string> neteaseHttpProbe(p, "--netease-http-probe", "", "Probe a public URL with the APK native curl, then exit");
     argparser::arg<std::string> neteaseCaBundle(p, "--netease-ca-bundle", "", "CA bundle for the standalone APK HTTP probe");
+    argparser::arg<std::string> neteaseCompat(p, "--netease-compat", "", "Rule-generated developer binary compatibility report");
     argparser::arg<std::string> neteaseSession(p, "--netease-session", "", "Experimental online developer login: private SAuth file (may arrive after startup)");
     argparser::arg<std::vector<std::string>> neteaseCommands(p, "--netease-command", "", "Developer JSON bridge call, dispatched after engineIsReady");
     argparser::arg<std::string> gameDir(p, "--game-dir", "-dg", "Directory with the game and assets");
@@ -188,6 +189,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     options.neteaseSessionFile = neteaseSession.get();
+    options.neteaseCompatFile = neteaseCompat.get();
     options.neteaseOnline = !options.neteaseSessionFile.empty();
     if(options.neteaseOnline && !options.neteaseDev) {
         Log::error("Launcher", "--netease-session requires --netease-dev");
@@ -613,9 +615,8 @@ Hardware	: Qualcomm Technologies, Inc MSM8998
     base = MinecraftUtils::getLibraryBase(handle);
     if(options.neteaseDev) {
         try {
-            if(options.neteaseVersion != "3.9.100.297020")
-                throw std::runtime_error("Unsupported developer APK version; expected 3.9.100.297020");
-            DeveloperCompat::patchArm64Dispatcher(base);
+            DeveloperBinary::load(options.neteaseCompatFile, PathHelper::findGameFile("lib/arm64-v8a/libminecraftpe.so"));
+            DeveloperCompat::patchArm64Dispatcher(base, handle);
         } catch(const std::exception& error) {
             Log::error("DeveloperCompat", "%s", error.what());
             return 1;

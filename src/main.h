@@ -9,6 +9,7 @@ struct LauncherOptions {
     bool neteaseDev = false;
     bool neteaseOnline = false;
     std::string neteaseSessionFile;
+    std::string neteaseCompatFile;
     std::string neteasePackage;
     std::string neteaseVersion;
     int neteaseVersionCode = 0;
