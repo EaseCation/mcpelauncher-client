@@ -37,12 +37,16 @@ private:
     bool useGameActivityTextInput = false;
 
     void registerJniClasses();
+    void setupNetEaseBridge(void* game);
 
     void registerNatives(std::shared_ptr<FakeJni::JClass const> clazz, std::vector<NativeEntry> entries,
                          void *(*symResolver)(const char *));
 
 public:
     JniSupport();
+
+    // Diagnostic stage: initialize JNI and register GameActivity methods only.
+    bool probeJni(void* game);
 
     void registerMinecraftNatives(void *(*symResolver)(const char *));
 

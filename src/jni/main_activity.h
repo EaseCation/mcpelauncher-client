@@ -1,8 +1,13 @@
 #pragma once
+#include "../developer_python.h"
 
 #include <fake-jni/fake-jni.h>
 #include "java_types.h"
 #include "../text_input_handler.h"
+#include <chrono>
+#include <atomic>
+#include "netease_sdk.h"
+#include "../main.h"
 
 class BuildVersion : public FakeJni::JObject {
 public:
@@ -17,7 +22,7 @@ public:
     DEFINE_CLASS_NAME("android/content/pm/PackageInfo")
 
     PackageInfo() {
-        versionName = std::make_shared<FakeJni::JString>("TODO");
+        versionName = std::make_shared<FakeJni::JString>(options.neteaseOnline ? options.neteaseVersion : "TODO");
     }
     std::shared_ptr<FakeJni::JString> versionName;
 };
@@ -48,7 +53,7 @@ public:
     }
 
     std::shared_ptr<FakeJni::JString> getPackageName() {
-        return std::make_shared<FakeJni::JString>("com.mojang.minecraftpe");
+        return std::make_shared<FakeJni::JString>(options.neteaseOnline ? options.neteasePackage : "com.mojang.minecraftpe");
     }
 
     std::shared_ptr<PackageManager> getPackageManager() {
@@ -104,6 +109,9 @@ public:
 #include <fstream>
 class MainActivity : public JGameActivity {
 private:
+    NetEaseSdk neteaseSdk;
+    std::atomic<bool> engineReady{false};
+    std::atomic<bool> developerScriptsReady{false};
     bool ignoreNextHideKeyboard = false;
     FakeJni::JInt lastChar = 0;
 
@@ -121,6 +129,14 @@ public:
     int getAndroidVersion() {
         return BuildVersion::SDK_INT;
     }
+
+    // Desktop startup has no Android ImageView splash animation to wait for.
+    int getLogoStep() { return 3; }
+    void setRuntimeMsg(std::shared_ptr<FakeJni::JString> message);
+    void postScriptError(std::shared_ptr<FakeJni::JString> title, std::shared_ptr<FakeJni::JString> detail);
+
+    FakeJni::JBoolean copyInnerAsset(std::shared_ptr<FakeJni::JString> source,
+                                   std::shared_ptr<FakeJni::JString> destination);
 
     int getScreenWidth() {
         int width, height;
@@ -146,11 +162,33 @@ public:
         return height;
     }
 
-    void tick() {}
-
-    FakeJni::JBoolean isNetworkEnabled(FakeJni::JBoolean wifi) {
-        return true;
+    void tick();
+    std::function<void(bool, int)> neteaseSdkCallback;
+    FakeJni::JBoolean unisdkInit() { return neteaseSdk.init(); }
+    void unisdkLogin() { neteaseSdk.login(); }
+    std::shared_ptr<FakeJni::JString> getPropStr(std::shared_ptr<FakeJni::JString> key) {
+        return std::make_shared<FakeJni::JString>(neteaseSdk.getString(key->asStdString()));
     }
+    FakeJni::JInt getPropInt(std::shared_ptr<FakeJni::JString> key, FakeJni::JInt fallback) {
+        return neteaseSdk.getInt(key->asStdString(), fallback);
+    }
+    void setPropStr(std::shared_ptr<FakeJni::JString> key, std::shared_ptr<FakeJni::JString> value) {
+        neteaseSdk.setString(key->asStdString(), value ? value->asStdString() : "");
+    }
+    void setPropInt(std::shared_ptr<FakeJni::JString> key, FakeJni::JInt value) {
+        neteaseSdk.setInt(key->asStdString(), value);
+    }
+    std::shared_ptr<FakeJni::JString> getSauthJson() { return std::make_shared<FakeJni::JString>(neteaseSdk.getString("SAUTH_JSON")); }
+    std::shared_ptr<FakeJni::JString> getSdkUid() { return std::make_shared<FakeJni::JString>(neteaseSdk.getString("SDK_UID")); }
+    void setSdkUid(std::shared_ptr<FakeJni::JString> value) { neteaseSdk.setString("SDK_UID", value->asStdString()); }
+    std::shared_ptr<FakeJni::JString> getChannel() { return options.neteaseOnline ? std::make_shared<FakeJni::JString>("netease") : nullptr; }
+    std::shared_ptr<FakeJni::JString> getUnisdkVer() { return options.neteaseOnline ? std::make_shared<FakeJni::JString>("3.4.0") : nullptr; }
+    void gameLoginSuccess();
+    DeveloperPython::Dispatch developerCommand;
+    std::atomic<bool> developerShutdownPending{false};
+    std::atomic<bool> developerShutdownStarted{false};
+
+    FakeJni::JBoolean isNetworkEnabled(FakeJni::JBoolean wifi);
 
     FakeJni::JBoolean isChromebook() {
         return true;

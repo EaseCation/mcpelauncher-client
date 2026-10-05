@@ -238,6 +238,8 @@ void JniSupport::startGame(ANativeActivity_createFunc* activityOnCreate, void* g
     activity = std::make_shared<MainActivity>();
     activityRef = vm.createGlobalReference(activity);
 
+    if(options.neteaseDev) setupNetEaseBridge(game);
+
     activity->textInput = &textInput;
     activity->quitCallback = [this]() { requestExitGame(); };
     activity->storageDirectory = PathHelper::getPrimaryDataDirectory();
@@ -281,12 +283,15 @@ void JniSupport::startGame(ANativeActivity_createFunc* activityOnCreate, void* g
         if(GameActivity_register)
             GameActivity_register(&frame.getJniEnv());
         
-        auto c = frame.getJniEnv().FindClass("com/google/androidgamesdk/Config");
+        auto c = frame.getJniEnv().FindClass(options.neteaseDev ? "android/content/res/Configuration" : "com/google/androidgamesdk/Config");
         auto ctr = frame.getJniEnv().GetMethodID(c, "<init>", "()V");
         auto initNative = (jlong(*)(
     JNIEnv *env, jobject javaGameActivity, jstring internalDataDir,
     jstring obbDir, jstring externalDataDir, jobject jAssetMgr,
     jbyteArray savedState, jobject javaConfig))linker::dlsym(game, "Java_com_google_androidgamesdk_GameActivity_initializeNativeCode");
+        if(!initNative)
+            throw std::runtime_error("GameActivity initializeNativeCode entry is missing");
+        Log::info("JniSupport", "Invoking GameActivity initializeNativeCode");
         gameActivity = (GameActivity *) initNative(&frame.getJniEnv(), (jobject)(jnivm::Object*)activity.get(), frame.getJniEnv().NewStringUTF("/internal"), frame.getJniEnv().NewStringUTF("/obb"), frame.getJniEnv().NewStringUTF("/external"), (jobject)(jnivm::Object*)assetManager.get(), frame.getJniEnv().NewByteArray(0), frame.getJniEnv().NewObject(c, ctr));
         gameActivityCallbacks = gameActivity->callbacks;
 
@@ -305,7 +310,7 @@ void JniSupport::startGame(ANativeActivity_createFunc* activityOnCreate, void* g
     network = std::make_shared<NetworkMonitor>();
     auto updateNetworkStatus = network->getClass().getMethod("(ZZZ)V", "nativeUpdateNetworkStatus");
     if(updateNetworkStatus)
-        updateNetworkStatus->invoke(frame.getJniEnv(), network.get(), true, true, true);
+        updateNetworkStatus->invoke(frame.getJniEnv(), network.get(), !options.neteaseDev || options.neteaseOnline, !options.neteaseDev || options.neteaseOnline, !options.neteaseDev || options.neteaseOnline);
 
     if(!options.importFilePath.empty()) {
         importFile(options.importFilePath);

@@ -33,6 +33,11 @@
 #endif
 #include "fake_looper.h"
 #include "fake_window.h"
+#include "library_probe.h"
+#include "developer_compat.h"
+#include "developer_arm64.h"
+#include "developer_python.h"
+#include "developer_network.h"
 #include "fake_assetmanager.h"
 #include "fake_egl.h"
 #include "symbols.h"
@@ -142,6 +147,13 @@ int main(int argc, char* argv[]) {
 
     argparser::arg_parser p;
     argparser::arg<bool> printVersion(p, "--version", "-v", "Prints version info");
+    argparser::arg<bool> probeLibrary(p, "--probe-library", "", "Loads libminecraftpe.so and reports entry symbols without starting the game (ELF constructors execute)");
+    argparser::arg<bool> probeJni(p, "--probe-jni", "", "Runs the library probe, JNI_OnLoad and GameActivity registration without starting a world");
+    argparser::arg<bool> neteaseDev(p, "--netease-dev", "", "Experimental offline developer APK startup");
+    argparser::arg<std::string> neteaseHttpProbe(p, "--netease-http-probe", "", "Probe a public URL with the APK native curl, then exit");
+    argparser::arg<std::string> neteaseCaBundle(p, "--netease-ca-bundle", "", "CA bundle for the standalone APK HTTP probe");
+    argparser::arg<std::string> neteaseSession(p, "--netease-session", "", "Experimental online developer login: private SAuth file (may arrive after startup)");
+    argparser::arg<std::vector<std::string>> neteaseCommands(p, "--netease-command", "", "Developer JSON bridge call, dispatched after engineIsReady");
     argparser::arg<std::string> gameDir(p, "--game-dir", "-dg", "Directory with the game and assets");
     argparser::arg<std::string> dataDir(p, "--data-dir", "-dd", "Directory to use for the data");
     argparser::arg<std::string> cacheDir(p, "--cache-dir", "-dc", "Directory to use for cache");
@@ -169,6 +181,25 @@ int main(int argc, char* argv[]) {
 
     if(!p.parse(argc, (const char**)argv))
         return 1;
+    const bool probeEnabled = probeLibrary.get() || probeJni.get();
+    options.neteaseDev = neteaseDev.get();
+    if(!neteaseHttpProbe.get().empty() && !options.neteaseDev) {
+        Log::error("Launcher", "--netease-http-probe requires --netease-dev");
+        return 1;
+    }
+    options.neteaseSessionFile = neteaseSession.get();
+    options.neteaseOnline = !options.neteaseSessionFile.empty();
+    if(options.neteaseOnline && !options.neteaseDev) {
+        Log::error("Launcher", "--netease-session requires --netease-dev");
+        return 1;
+    }
+    options.neteaseCommands = neteaseCommands;
+    if(!options.neteaseCommands.empty() && !options.neteaseDev) {
+        Log::error("Launcher", "--netease-command requires --netease-dev");
+        return 1;
+    }
+    const bool extendedBindings = probeEnabled || options.neteaseDev;
+    const bool useHostFmod = !disableFmod.get() && !options.neteaseDev;
     if(printVersion) {
         printVersionInfo();
         return 0;
@@ -237,11 +268,21 @@ int main(int argc, char* argv[]) {
         axml::AXMLFile manifestFile (smanifest.data(), smanifest.size());
         axml::AXMLParser manifestParser (manifestFile);
         ApkInfo apkInfo = ApkInfo::fromXml(manifestParser);
+        if(options.neteaseDev && apkInfo.package != "com.netease.mctest") {
+            Log::error("Launcher", "--netease-dev requires the developer APK com.netease.mctest");
+            return 1;
+        }
 
         Log::info("Launcher", "Minecraft Package: %s", apkInfo.package.c_str());
         Log::info("Launcher", "Minecraft Version Code: %d", apkInfo.versionCode);
 
         MinecraftVersion::init(apkInfo.package, apkInfo.versionCode);
+        options.neteasePackage = apkInfo.package;
+        options.neteaseVersion = apkInfo.versionName;
+        options.neteaseVersionCode = apkInfo.versionCode;
+    } else if(options.neteaseDev) {
+        Log::error("Launcher", "Developer APK AndroidManifest.xml is required");
+        return 1;
     }
     Log::info("Launcher", "Game version: %s", MinecraftVersion::getString().c_str());
 
@@ -292,6 +333,8 @@ int main(int argc, char* argv[]) {
         Settings::load();
         Log::info("Launcher", "Applied Launcher Settings");
     }
+
+    if(options.neteaseDev) DeveloperPython::start(PathHelper::getPrimaryDataDirectory(), options.neteaseCommands);
 
     Log::trace("Launcher", "Loading android libraries");
     linker::init();
@@ -395,6 +438,8 @@ Hardware	: Qualcomm Technologies, Inc MSM8998
     }
     auto libC = MinecraftUtils::getLibCSymbols();
     ThreadMover::hookLibC(libC);
+    if(extendedBindings)
+        DeveloperCompat::addLibCBindings(libC);
 
 #ifdef USE_ARMHF_SUPPORT
     linker::load_library("ld-android.so", {});
@@ -436,6 +481,8 @@ Hardware	: Qualcomm Technologies, Inc MSM8998
     linker::load_library("libc.so", libC);
     MinecraftUtils::loadLibM();
 #endif
+    if(extendedBindings)
+        DeveloperCompat::addRuntimeLibCBindings();
     MinecraftUtils::setupHybris();
     try {
         PathHelper::findGameFile(std::string("lib/") + MinecraftUtils::getLibraryAbi() + "/libminecraftpe.so");
@@ -445,7 +492,7 @@ Hardware	: Qualcomm Technologies, Inc MSM8998
     }
     linker::update_LD_LIBRARY_PATH(PathHelper::findGameFile(std::string("lib/") + MinecraftUtils::getLibraryAbi()).data());
     bool fmodLoaded = false;
-    if(!disableFmod) {
+    if(useHostFmod) {
         try {
             MinecraftUtils::loadFMod();
             fmodLoaded = true;
@@ -455,6 +502,8 @@ Hardware	: Qualcomm Technologies, Inc MSM8998
     }
     FakeEGL::setProcAddrFunction((void* (*)(const char*))windowManager->getProcAddrFunc());
     FakeEGL::installLibrary();
+    if(extendedBindings)
+        DeveloperCompat::addEGLBindings();
     if(options.graphicsApi == GraphicsApi::OPENGL_ES2) {
         // GLFW needs a window to let eglGetProcAddress return symbols
         FakeLooper::initWindow();
@@ -473,6 +522,8 @@ Hardware	: Qualcomm Technologies, Inc MSM8998
     FakeInputQueue::initHybrisHooks(android_syms);
     FakeLooper::initHybrisHooks(android_syms);
     FakeWindow::initHybrisHooks(android_syms);
+    if(extendedBindings)
+        DeveloperCompat::addAndroidBindings(android_syms);
     SmartStub<android_symbols, std::make_index_sequence<(sizeof(android_symbols) / sizeof(*android_symbols)) - 1>>::AddAll(android_syms);
     linker::load_library("libandroid.so", android_syms);
     CorePatches::loadGameWindowLibrary();
@@ -490,6 +541,19 @@ Hardware	: Qualcomm Technologies, Inc MSM8998
                                                         {"mcpelauncher_close_window", (void*)mcpelauncher_close_window},
                                                     });
 #endif
+
+    if(probeEnabled) {
+        auto probeHandle = LibraryProbe::load();
+        int result = 0;
+        if(probeJni.get()) {
+            // Keep the VM alive until process exit, avoiding JNI unload paths
+            // that depend on an activity lifecycle this probe never started.
+            auto probeSupport = new JniSupport();
+            result = probeSupport->probeJni(probeHandle) ? 0 : 54;
+        }
+        std::fflush(nullptr);
+        _Exit(result);
+    }
 
     JniSupport support;
     ModLoader modLoader;
@@ -526,7 +590,7 @@ Hardware	: Qualcomm Technologies, Inc MSM8998
         // Try load the game again
         handle = MinecraftUtils::loadMinecraftLib(reinterpret_cast<void*>(&CorePatches::showMousePointer), reinterpret_cast<void*>(&CorePatches::hideMousePointer), reinterpret_cast<void*>(&CorePatches::setFullscreen), reinterpret_cast<void*>(&FakeLooper::onGameActivityClose), mcpeHooks);
     }
-    if(!handle && !disableFmod) {
+    if(!handle && useHostFmod) {
         // 1.21.30.22 technically require newer fmod
         auto libfmod = linker::dlopen("libfmod.so", 0);
         linker::dlclose(libfmod);
@@ -540,8 +604,23 @@ Hardware	: Qualcomm Technologies, Inc MSM8998
         return 51;
     }
     Log::info("Launcher", "Loaded Minecraft library");
+    if(!neteaseHttpProbe.get().empty()) {
+        auto result = DeveloperNetwork::probe(handle, neteaseHttpProbe.get(), neteaseCaBundle.get());
+        std::fflush(nullptr);
+        _Exit(result);
+    }
     Log::debug("Launcher", "Minecraft is at offset 0x%" PRIXPTR, (uintptr_t)MinecraftUtils::getLibraryBase(handle));
     base = MinecraftUtils::getLibraryBase(handle);
+    if(options.neteaseDev) {
+        try {
+            if(options.neteaseVersion != "3.9.100.297020")
+                throw std::runtime_error("Unsupported developer APK version; expected 3.9.100.297020");
+            DeveloperCompat::patchArm64Dispatcher(base);
+        } catch(const std::exception& error) {
+            Log::error("DeveloperCompat", "%s", error.what());
+            return 1;
+        }
+    }
 
     if(!freeOnly.get()) {
         modLoader.loadModsFromDirectory(PathHelper::getPrimaryDataDirectory() + "mods/");

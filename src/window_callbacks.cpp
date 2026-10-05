@@ -1,4 +1,6 @@
 #include "window_callbacks.h"
+#include "developer_lifecycle.h"
+#include "developer_python.h"
 #include "symbols.h"
 
 #include <mcpelauncher/minecraft_version.h>
@@ -75,10 +77,14 @@ void WindowCallbacks::onWindowSizeCallback(int w, int h) {
 void WindowCallbacks::setCursorLocked(bool locked) {
     cursorLocked = locked;
     if(hasInputMode(InputMode::Mouse, false))
-        window.setCursorDisabled(locked);
+        window.setCursorDisabled(locked && !(options.neteaseDev && options.emulateTouch));
 }
 
 void WindowCallbacks::onClose() {
+    if(options.neteaseDev) {
+        DeveloperLifecycle::requestExit();
+        return;
+    }
     _Exit(0);
 }
 
@@ -111,7 +117,7 @@ bool WindowCallbacks::hasInputMode(WindowCallbacks::InputMode want, bool changeM
             printf("Input Mode changed to %d\n", (int)want);
 #endif
             if(want == InputMode::Mouse) {
-                window.setCursorDisabled(cursorLocked);
+                window.setCursorDisabled(cursorLocked && !(options.neteaseDev && options.emulateTouch));
             } else {
                 window.setCursorDisabled(true);
             }
@@ -219,6 +225,7 @@ void WindowCallbacks::onMousePosition(double x, double y) {
     }
 }
 void WindowCallbacks::onMouseRelativePosition(double x, double y) {
+    if(options.neteaseDev && options.emulateTouch) return;
     if(hasInputMode(InputMode::Mouse, std::abs(x) > 10 || std::abs(y) > 10)) {
         if(mousePositionCallbacksLock.try_lock()) {
             for(size_t i = 0; i < mousePositionCallbacks.size(); i++) {
@@ -439,6 +446,14 @@ void WindowCallbacks::onKeyboard(KeyCode key, KeyAction action, int mods) {
             jniSupport.getTextInputHandler().onKeyPressed(key, action, mods);
         }
 
+        if(options.neteaseDev && key == KeyCode::FN11) {
+            if(action == KeyAction::PRESS) {
+                options.emulateTouch = !options.emulateTouch;
+                setCursorLocked(cursorLocked);
+                DeveloperPython::setTouchWithMouse(options.emulateTouch);
+            }
+            return;
+        }
         if(key == KeyCode::FN11 && action == KeyAction::PRESS)
             setFullscreen(!Settings::fullscreen);
 
