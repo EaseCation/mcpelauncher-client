@@ -3,6 +3,7 @@
 #include <mcpelauncher/linker.h>
 #include <log.h>
 #include <cstdint>
+#include "developer_input_clock.h"
 
 namespace DeveloperUI {
 namespace {
@@ -17,6 +18,10 @@ bool mainThread() {
     return function<bool (*)(void*)>(binding.at("isMainThread").get<uintptr_t>())(thread);
 }
 void* boolean(bool value) { return function<void* (*)(long)>(binding.at("boolean").get<uintptr_t>())(value); }
+void* monotonic(void*, void*) {
+    // 绑定由受审计结构规则提供，不从版本号或不匹配的 ABI 推测。
+    return function<void* (*)(double)>(binding.at("floatFromDouble").get<uintptr_t>())(McpyInputClock::seconds());
+}
 void* reload(void*, void*) {
     if(!mainThread()) return boolean(false);
     auto context = function<void* (*)()>(binding.at("context").get<uintptr_t>())();
@@ -34,6 +39,9 @@ void* reload(void*, void*) {
 struct Method { const char* name; void* (*call)(void*, void*); int flags; const char* doc; };
 // CPython keeps these method descriptors alive for the interpreter lifetime.
 Method methods[] = {{"reload_ui", reload, 4, "Request JSON UI definition reload on the game thread."}, {}};
+Method inputMethods[] = {
+    {"reload_ui", reload, 4, "Request JSON UI definition reload on the game thread."},
+    {"monotonic", monotonic, 4, "Monotonic seconds from the native steady clock."}, {}};
 }
 void prepare(void* game) {
 #if defined(__aarch64__) && !defined(NO_OPENSSL)
@@ -52,7 +60,8 @@ void installPythonModule() {
     if(!base || installed || !mainThread()) return;
     auto gil = function<int (*)()>(binding.at("gilEnsure").get<uintptr_t>())();
     installed = function<void* (*)(const char*, Method*, const char*, void*, int)>(binding.at("initModule").get<uintptr_t>())(
-        "_mcpy_launcher", methods, "Local developer launcher capabilities.", nullptr, 1013) != nullptr;
+        "_mcpy_launcher", binding.contains("floatFromDouble") ? inputMethods : methods,
+        "Local developer launcher capabilities.", nullptr, 1013) != nullptr;
     function<void (*)(int)>(binding.at("gilRelease").get<uintptr_t>())(gil);
     if(installed) Log::info("DeveloperUI", "Client Python module installed");
 }
