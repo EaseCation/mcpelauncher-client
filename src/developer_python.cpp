@@ -1,5 +1,8 @@
 #include "developer_python.h"
 #include "developer_lifecycle.h"
+#ifdef __APPLE__
+#include "developer_screenshot.h"
+#endif
 #include <simpleipc/server/service.h>
 #include <chrono>
 #include <atomic>
@@ -73,9 +76,13 @@ Json rpc(const std::string& method, const Json& data) {
     if(method == "status") {
         unsigned queued = 0;
         for(const auto& pair : requests) if(pair.second.result["state"] == "queued") ++queued;
-        return {{"protocol", 1}, {"pid", getpid()}, {"python_ready", pythonReady},
+        Json status{{"protocol", 1}, {"pid", getpid()}, {"python_ready", pythonReady},
                 {"scripts_ready", scriptReady}, {"running", active}, {"queued", queued},
                 {"stopping", DeveloperLifecycle::exitRequested()}};
+#ifdef __APPLE__
+        status["screenshot_protocol"] = 1;
+#endif
+        return status;
     }
     auto it = requests.find(data.at("request_id").get<std::string>());
     if(it == requests.end()) throw std::runtime_error("Unknown request ID");
@@ -105,6 +112,15 @@ void start(const std::string& dataDirectory, const std::vector<std::string>& sta
     if(!mkdtemp(pattern.data())) throw std::runtime_error("Cannot create private Python socket directory");
     directory = pattern;
     service = std::make_unique<simpleipc::server::service>(directory + "/control.sock");
+#ifdef __APPLE__
+    DeveloperScreenshot::initialize(directory);
+    service->add_handler("screenshot", [](simpleipc::connection&, const std::string&, const Json& data) {
+        try { return simpleipc::rpc_json_result::response(DeveloperScreenshot::request(data)); }
+        catch(const std::exception&) {
+            return simpleipc::rpc_json_result::response({{"state", "failed"}, {"code", "invalid_request"}});
+        }
+    });
+#endif
     std::atexit(cleanup);
     for(auto method : {"submit", "result", "status", "cancel", "release"})
         service->add_handler(method, [method](simpleipc::connection&, const std::string&, const Json& data) {
@@ -224,6 +240,9 @@ void tick(const Dispatch& dispatch, bool engineReady, bool scriptsReady) {
 
 void cleanup() {
     service.reset();
+#ifdef __APPLE__
+    DeveloperScreenshot::cleanup();
+#endif
     if(!metadata.empty()) unlink(metadata.c_str());
     if(!directory.empty()) { unlink((directory + "/control.sock").c_str()); rmdir(directory.c_str()); }
 }
