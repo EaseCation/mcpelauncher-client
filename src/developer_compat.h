@@ -57,9 +57,10 @@ inline void addLibCBindings(std::unordered_map<std::string, void*>& libC) {
     // Deliberately terminating diagnostic bindings, not API emulation.
     // These allow relocation to proceed without silently accepting calls
     // for which Bionic/Darwin structures or semantics differ.
-#define UNIMPLEMENTED_ANDROID(name) libC[#name] = (void*)+[]() { \
+    // libc-shim 已提供 ABI 转换的接口优先，终止桩只填补缺口。
+#define UNIMPLEMENTED_ANDROID(name) libC.emplace(#name, (void*)+[]() { \
         Log::error("DeveloperCompat", "Unimplemented Android interface: " #name); \
-        std::fflush(nullptr); _Exit(53); };
+        std::fflush(nullptr); _Exit(53); });
     UNIMPLEMENTED_ANDROID(__libc_current_sigrtmin)
     UNIMPLEMENTED_ANDROID(__libc_current_sigrtmax)
     UNIMPLEMENTED_ANDROID(ttyname)
@@ -68,8 +69,6 @@ inline void addLibCBindings(std::unordered_map<std::string, void*>& libC) {
     UNIMPLEMENTED_ANDROID(getservbyport)
     UNIMPLEMENTED_ANDROID(getprotobyname)
     UNIMPLEMENTED_ANDROID(__get_h_errno)
-    UNIMPLEMENTED_ANDROID(getlogin)
-    UNIMPLEMENTED_ANDROID(sysinfo)
 #undef UNIMPLEMENTED_ANDROID
     libC["pthread_sigmask"] = (void*)+[](int, const void*, void*) -> int {
         Log::error("DeveloperCompat", "Unimplemented Android interface: pthread_sigmask");

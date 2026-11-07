@@ -438,6 +438,10 @@ Hardware	: Qualcomm Technologies, Inc MSM8998
     for(auto&& redir : shim::rewrite_filesystem_access) {
         Log::trace("REDIRECT", "%s to %s", redir.first.data(), redir.second.data());
     }
+    // 游戏内置的 Tracy 会在首次线程命名时自行启动；默认只监听本机 IPv4，
+    // 避免对局域网开放分析端口。显式设置的环境变量优先。
+    setenv("TRACY_ONLY_LOCALHOST", "1", 0);
+    setenv("TRACY_ONLY_IPV4", "1", 0);
     auto libC = MinecraftUtils::getLibCSymbols();
     ThreadMover::hookLibC(libC);
     if(extendedBindings)
