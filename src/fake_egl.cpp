@@ -2,9 +2,7 @@
 #include "gl_core_patch.h"
 #include "settings.h"
 #include "imgui_ui.h"
-#ifdef __APPLE__
 #include "developer_screenshot.h"
-#endif
 #include <map>
 
 #define __ANDROID__
@@ -121,9 +119,7 @@ EGLBoolean eglSwapBuffers(EGLDisplay display, EGLSurface surface) {
         FakeEGL::swapBuffersCallbacksLock.unlock();
     }
     //    Log::trace("FakeEGL", "eglSwapBuffers");
-#ifdef __APPLE__
     DeveloperScreenshot::capture(*(GameWindow *)surface);
-#endif
 #ifdef USE_IMGUI
     ImGuiUIDrawFrame((GameWindow *)surface);
 #endif

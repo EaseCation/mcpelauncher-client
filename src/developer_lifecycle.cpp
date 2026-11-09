@@ -9,9 +9,15 @@
 #include <thread>
 #include <chrono>
 #include <log.h>
+#include <cerrno>
 #ifdef __APPLE__
 #include <libproc.h>
 #include <sys/proc_info.h>
+#include <unistd.h>
+#endif
+#ifdef __linux__
+#include <dirent.h>
+#include <climits>
 #include <unistd.h>
 #endif
 
@@ -57,8 +63,31 @@ bool DeveloperLifecycle::worldDatabaseOpen() {
             return true;
     }
     return false;
+#elif defined(__linux__)
+    // procfs 列出本进程全部文件描述符；读取失败时按“世界可能已打开”处理。
+    DIR* fds = opendir("/proc/self/fd");
+    if(!fds) return true;
+    bool open = false;
+    while(auto* entry = readdir(fds)) {
+        if(entry->d_name[0] == '.') continue;
+        std::string link = std::string("/proc/self/fd/") + entry->d_name;
+        char target[PATH_MAX];
+        auto length = readlink(link.c_str(), target, sizeof(target) - 1);
+        if(length < 0) {
+            if(errno == ENOENT) continue; // 遍历期间关闭的描述符
+            open = true;
+            break;
+        }
+        std::string path(target, static_cast<size_t>(length));
+        if(path.find("/minecraftWorlds/") != std::string::npos && path.find("/db/") != std::string::npos) {
+            open = true;
+            break;
+        }
+    }
+    closedir(fds);
+    return open;
 #else
-    return true; // The developer save/close contract is currently macOS-only.
+    return true; // Other hosts have no verified file-descriptor inspection.
 #endif
 }
 
