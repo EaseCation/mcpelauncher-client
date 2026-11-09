@@ -35,6 +35,9 @@
 #include "fake_window.h"
 #include "library_probe.h"
 #include "developer_compat.h"
+#ifdef __linux__
+#include "developer_network_guard.h"
+#endif
 #include "developer_arm64.h"
 #include "developer_python.h"
 #include "developer_network.h"
@@ -155,6 +158,8 @@ int main(int argc, char* argv[]) {
     argparser::arg<std::string> neteaseCompat(p, "--netease-compat", "", "Rule-generated developer binary compatibility report");
     argparser::arg<std::string> neteaseSession(p, "--netease-session", "", "Experimental online developer login: private SAuth file (may arrive after startup)");
     argparser::arg<std::vector<std::string>> neteaseCommands(p, "--netease-command", "", "Developer JSON bridge call, dispatched after engineIsReady");
+    argparser::arg<bool> neteaseNetworkGuard(p, "--netease-network-guard", "", "Linux: block non-loopback destinations of game code (in-process policy)");
+    argparser::arg<std::vector<std::string>> neteaseNetworkAllow(p, "--netease-network-allow", "", "Linux: additional UDP endpoint udp:<numeric address>:<port> allowed by the network guard");
     argparser::arg<std::string> gameDir(p, "--game-dir", "-dg", "Directory with the game and assets");
     argparser::arg<std::string> dataDir(p, "--data-dir", "-dd", "Directory to use for the data");
     argparser::arg<std::string> cacheDir(p, "--cache-dir", "-dc", "Directory to use for cache");
@@ -200,6 +205,20 @@ int main(int argc, char* argv[]) {
         Log::error("Launcher", "--netease-command requires --netease-dev");
         return 1;
     }
+    if((neteaseNetworkGuard.get() || !neteaseNetworkAllow.get().empty()) && !options.neteaseDev) {
+        Log::error("Launcher", "--netease-network-guard requires --netease-dev");
+        return 1;
+    }
+    if(!neteaseNetworkAllow.get().empty() && !neteaseNetworkGuard.get()) {
+        Log::error("Launcher", "--netease-network-allow requires --netease-network-guard");
+        return 1;
+    }
+#ifndef __linux__
+    if(neteaseNetworkGuard.get()) {
+        Log::error("Launcher", "--netease-network-guard is only available on Linux; use the host sandbox");
+        return 1;
+    }
+#endif
     const bool extendedBindings = probeEnabled || options.neteaseDev;
     const bool useHostFmod = !disableFmod.get() && !options.neteaseDev;
     if(printVersion) {
@@ -442,10 +461,23 @@ Hardware	: Qualcomm Technologies, Inc MSM8998
     // 避免对局域网开放分析端口。显式设置的环境变量优先。
     setenv("TRACY_ONLY_LOCALHOST", "1", 0);
     setenv("TRACY_ONLY_IPV4", "1", 0);
+    // Linux 宿主允许 perf 事件时，Tracy 会启动系统级采样线程（macOS 上不可用）。
+    // 默认关闭以保持两端行为一致并避免采样开销；需要时显式设置 TRACY_NO_SYS_TRACE=0。
+    setenv("TRACY_NO_SYS_TRACE", "1", 0);
     auto libC = MinecraftUtils::getLibCSymbols();
     ThreadMover::hookLibC(libC);
     if(extendedBindings)
         DeveloperCompat::addLibCBindings(libC);
+#ifdef __linux__
+    if(neteaseNetworkGuard.get()) {
+        try {
+            DeveloperNetworkGuard::install(libC, neteaseNetworkAllow.get());
+        } catch(const std::exception& error) {
+            Log::error("Launcher", "Invalid network policy: %s", error.what());
+            return 1;
+        }
+    }
+#endif
 
 #ifdef USE_ARMHF_SUPPORT
     linker::load_library("ld-android.so", {});

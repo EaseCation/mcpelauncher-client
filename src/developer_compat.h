@@ -17,7 +17,7 @@
 #ifdef __APPLE__
 #include <crt_externs.h>
 #else
-extern char **environ;
+#include <unistd.h> // glibc 以 C 链接声明 environ（_GNU_SOURCE）
 #endif
 
 namespace DeveloperCompat {
@@ -78,8 +78,12 @@ inline void addLibCBindings(std::unordered_map<std::string, void*>& libC) {
 }
 
 inline void addRuntimeLibCBindings() {
+#ifdef __APPLE__
     // Reuse the bundled Android-ABI formatter. A Bionic arm64 va_list
     // cannot be forwarded to Darwin's vsprintf/vsnprintf.
+    // Linux 不需要也不能这样做：那里 libc.so 的 vsnprintf 就是 glibc 实现，
+    // glibc 计算 buffer + SIZE_MAX 时指针回绕、不写任何字节；而 AArch64 Linux
+    // 的 va_list 与 Bionic 相同，libc-shim 已直接映射宿主 vsprintf。
     auto libc = linker::dlopen("libc.so", RTLD_NOW);
     static auto androidVsnprintf = (int (*)(char*, size_t, const char*, void*))linker::dlsym(libc, "vsnprintf");
     if(!androidVsnprintf)
@@ -88,6 +92,7 @@ inline void addRuntimeLibCBindings() {
         return androidVsnprintf(buffer, SIZE_MAX, format, args);
     }}});
     linker::dlclose(libc);
+#endif
 }
 
 inline void addEGLBindings() {
