@@ -8,6 +8,17 @@
 #include <log.h>
 #include <filesystem>
 #include <nlohmann/json.hpp>
+#if defined(__APPLE__)
+#include <sys/attr.h>
+#include <sys/clonefile.h>
+#elif defined(__linux__)
+#include <fcntl.h>
+#include <sys/ioctl.h>
+#include <unistd.h>
+#if __has_include(<linux/fs.h>)
+#include <linux/fs.h>
+#endif
+#endif
 
 class NetEaseSdkCallback : public FakeJni::JObject {
 public:
@@ -146,6 +157,58 @@ void MainActivity::postScriptError(std::shared_ptr<FakeJni::JString> title, std:
     Log::error("GameScript", "%s: %s", title ? title->asStdString().c_str() : "", detail ? detail->asStdString().c_str() : "");
 }
 
+// Copy-on-write clone of one regular file. Returns false when the volume cannot
+// clone (non-APFS/Btrfs/XFS, cross-volume) so the caller falls back to a copy.
+static bool cloneAssetFile(const std::filesystem::path& from, const std::filesystem::path& to) {
+#if defined(__APPLE__)
+    return clonefile(from.c_str(), to.c_str(), CLONE_NOFOLLOW | CLONE_NOOWNERCOPY) == 0;
+#elif defined(__linux__) && defined(FICLONE)
+    int input = open(from.c_str(), O_RDONLY | O_CLOEXEC);
+    if(input < 0) return false;
+    int output = open(to.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0644);
+    if(output < 0) { close(input); return false; }
+    bool cloned = ioctl(output, FICLONE, input) == 0;
+    close(input);
+    close(output);
+    if(!cloned) unlink(to.c_str());
+    return cloned;
+#else
+    (void) from; (void) to;
+    return false;
+#endif
+}
+
+struct AssetCopyStats { size_t cloned = 0, copied = 0; };
+
+// Same merge semantics as fs::copy(recursive | overwrite_existing), but regular
+// files are cloned when possible: every instance otherwise duplicated the
+// ~400 MB storge/asset tree the game copies out of the APK on first launch.
+static AssetCopyStats copyAssetTree(const std::filesystem::path& from, const std::filesystem::path& to) {
+    namespace fs = std::filesystem;
+    AssetCopyStats stats;
+    auto copyFile = [&stats](const fs::path& source, const fs::path& target) {
+        if(fs::is_regular_file(fs::symlink_status(target))) fs::remove(target);
+        if(cloneAssetFile(source, target)) {
+            stats.cloned++;
+            return;
+        }
+        fs::copy_file(source, target, fs::copy_options::overwrite_existing);
+        stats.copied++;
+    };
+    if(!fs::is_directory(from)) {
+        copyFile(from, fs::is_directory(to) ? to / from.filename() : to);
+        return stats;
+    }
+    fs::create_directories(to);
+    for(auto it = fs::recursive_directory_iterator(from); it != fs::recursive_directory_iterator(); ++it) {
+        const auto target = to / it->path().lexically_relative(from);
+        if(it->is_directory()) fs::create_directories(target);
+        else if(it->is_regular_file()) copyFile(it->path(), target);
+        else fs::copy(it->path(), target, fs::copy_options::overwrite_existing);
+    }
+    return stats;
+}
+
 FakeJni::JBoolean MainActivity::copyInnerAsset(std::shared_ptr<FakeJni::JString> source,
                                             std::shared_ptr<FakeJni::JString> destination) {
     namespace fs = std::filesystem;
@@ -164,9 +227,9 @@ FakeJni::JBoolean MainActivity::copyInnerAsset(std::shared_ptr<FakeJni::JString>
             Log::error("AssetCopy", "Unsupported path: %s -> %s", from.c_str(), to.c_str());
             return false;
         }
-        Log::info("AssetCopy", "%s -> %s", from.c_str(), to.c_str());
         fs::create_directories(to.parent_path());
-        fs::copy(from, to, fs::copy_options::recursive | fs::copy_options::overwrite_existing);
+        const auto stats = copyAssetTree(from, to);
+        Log::info("AssetCopy", "%s -> %s (cloned %zu, copied %zu)", from.c_str(), to.c_str(), stats.cloned, stats.copied);
         return true;
     } catch(const std::exception& error) {
         Log::error("AssetCopy", "%s", error.what());
